@@ -30,10 +30,42 @@ def get_epochwave(f, size=None, state_vect=False):
     else:
         return Y
 
-def get_labels(f):
-	pass
 
-def import_data(n_files=None):
+def get_labels(f, offset=0, use_dict=True):
+    #
+    data_list = open(f, 'r').read().replace('\r','').split('\n')
+    filt = lambda x: x != ''
+    data_list = filter(filt, data_list)
+    #
+    if use_dict: #good idea to use the same dictionary across all subjects
+        Y_dict = {
+            '/m/ mmm' : 0,
+            '/n/ nnn' : 1,
+            '/tiy/ tee' : 2,
+            '/piy/ pea' : 3,
+            '/diy/ dee' : 4,
+            '/iy/ ee' : 5,
+            '/uw/ ooh' : 6,
+            'knew' : 7,
+            'gnaw' : 8,
+            'pat' : 9,
+            'pot' : 10
+        }
+        for key in Y_dict.keys():
+            Y_dict[key] += offset
+    else:
+        Y_dict = {}
+        label_count = 0+offset
+        for label in data_list:
+            if label not in Y_dict.keys():
+                Y_dict[label] = label_count
+                label_count += 1
+    #
+    Y = np.array([Y_dict[i] for i in data_list])
+    return Y, Y_dict
+
+
+def get_data_dirs(n_files=None):
     # define root, filepath
     home = os.environ["HOME"]
     data_root = home+"/data/karaOne/"
@@ -49,8 +81,15 @@ def import_data(n_files=None):
     #Y label files 
     mapper_pre = lambda root: [root+f+'/' for f in os.listdir(root) if f=='kinect_data'][0]
     mapper = lambda root: [mapper_pre(root)+f for f in os.listdir(mapper_pre(root)) 
-    				if (f[-4:]=='.txt' and len(f) in (7,8))][0]
-    lab_files = map(mapper, data_dirs)
+    						if (f[-4:]=='.txt' and len(f) in (7,8))][0]
+    lab_files = sorted(map(mapper, data_dirs))
+    #
+    return cnt_files, ind_files, lab_files
+
+
+def import_data(n_files=None):
+    # get file locations
+    cnt_files, ind_files, lab_files = get_data_dirs(n_files)
     # process X
     channel_range = np.arange(0,64)
     channel_dict = {name:i for i,name in enumerate(
