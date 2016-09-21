@@ -5,10 +5,12 @@ import os
 import mne
 from scipy import io
 
+from preprocessing import window
+
 
 
 def get_statewave(f, size=None, state_vect=False):
-    label_dict = {'clearing_inds': 1, 'thinking_inds': 2, 'speaking_inds':3}
+    label_dict = {'clearing_inds': 1, 'thinking_inds': 2, 'speaking_inds': 3}
     ind_dict = io.loadmat(f)
     # format indices
     for key in label_dict.keys():
@@ -33,7 +35,7 @@ def get_statewave(f, size=None, state_vect=False):
 
 
 def get_epochwave(f, size=None):
-    label_dict = {'clearing_inds': 1, #'thinking_inds': 2, 
+    label_dict = {'clearing_inds': 1, #'thinking_inds': 2,
                 'speaking_inds':3}
     ind_dict = io.loadmat(f)
     # format indices
@@ -52,7 +54,7 @@ def get_epochwave(f, size=None):
     #
     epochwave = np.cumsum(epochwave)
     return epochwave
-    
+
 
 
 def make_labelwave(epochwave, labels):
@@ -71,19 +73,19 @@ def get_labels(f, offset=0, use_dict=True, ret_dict=False):
     filt = lambda x: x != ''
     data_list = filter(filt, data_list)
     #
-    if use_dict: #good idea to use the same dictionary across all subjects
+    if use_dict: # good idea to use the same dictionary across all subjects
         Y_dict = {
-            '/m/ mmm' : 0,
-            '/n/ nnn' : 1,
-            '/tiy/ tee' : 2,
-            '/piy/ pea' : 3,
-            '/diy/ dee' : 4,
-            '/iy/ ee' : 5,
-            '/uw/ ooh' : 6,
-            'knew' : 7,
-            'gnaw' : 8,
-            'pat' : 9,
-            'pot' : 10
+            '/m/ mmm': 0,
+            '/n/ nnn': 1,
+            '/tiy/ tee': 2,
+            '/piy/ pea': 3,
+            '/diy/ dee': 4,
+            '/iy/ ee': 5,
+            '/uw/ ooh': 6,
+            'knew': 7,
+            'gnaw': 8,
+            'pat': 9,
+            'pot': 10
         }
         for key in Y_dict.keys():
             Y_dict[key] += offset
@@ -109,16 +111,16 @@ def get_data_dirs(n_files=None):
     data_root = home+"/data/karaOne/"
     # get files
     data_dirs = sorted([data_root+f+'/' for f in os.listdir(data_root)
-            if f[:2] in ('MM','P0')])[:n_files]
-    #X files
-    mapper = lambda root: [root+f for f in os.listdir(root) if f[-4:]=='.cnt'][0];
+            if f[:2] in ('MM', 'P0')])[:n_files]
+    # X files
+    mapper = lambda root: [root+f for f in os.listdir(root) if f[-4:] == '.cnt'][0]
     cnt_files = sorted(map(mapper, data_dirs))
-    #Y index files
-    mapper = lambda root: [root+f for f in os.listdir(root) if f=='epoch_inds.mat'][0]
+    # Y index files
+    mapper = lambda root: [root+f for f in os.listdir(root) if f == 'epoch_inds.mat'][0]
     ind_files = sorted(map(mapper, data_dirs))
-    #Y label files 
+    # Y label files
     mapper_pre = lambda root: [root+f+'/' for f in os.listdir(root) if f=='kinect_data'][0]
-    mapper = lambda root: [mapper_pre(root)+f for f in os.listdir(mapper_pre(root)) 
+    mapper = lambda root: [mapper_pre(root)+f for f in os.listdir(mapper_pre(root))
     						if (f[-4:]=='.txt' and len(f) in (7,8))][0]
     lab_files = sorted(map(mapper, data_dirs))
     #
@@ -154,7 +156,7 @@ def import_data(n_files=None, preprocessor=None):
 
 
 ### this function is to get time series chunks
-def import_data_windows(n_files=None, state="thinking_inds", preprocessor=None):
+def import_data_chunks(n_files=None, state="thinking_inds", preprocessor=None):
     # use original file initially
     X_series, Y_statewave, Y_labelwave = import_data(n_files, preprocessor)
     ind_files = get_data_dirs(n_files)[1]
@@ -175,16 +177,92 @@ def import_data_windows(n_files=None, state="thinking_inds", preprocessor=None):
 
 ###
 def train_test_split(X, Y):
-
-
-
+    '''
+        X contains instances of epoch windows
+        Y is assumed to contain equal sized windows of epoch labels
+    '''
+    # first organize data
+    epoch_dict = {}
+    for x,y in zip(X,Y):
+        label = y[0]
+        if label not in epoch_dict:
+            epoch_dict[label] = [x]
+        else:
+            epoch_dict[label].append(x)
+    # assuming keep two epochs each for testing, 1 for validation : n:1:2 split
+    train, valid, test = [], [], []
+    mapper = lambda x, y: y*np.ones(len(x))
+    for y,x in epoch_dict.items():
+        data = zip(x, map(mapper, x, [y for _ in range(len(x))]))
+        #splits
+        #train
+        train.extend(data[:-3])
+        #valid
+        valid.extend(data[-3:-2])
+        #test
+        test.extend(data[-2:])        
+    
+    mapper = lambda T: zip(*T)
+    train, valid, test = map(mapper, (train, valid, test))
+    (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = train, valid, test
     return (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test)
 
 
 
+### helper function to apply 
+def map_function(function, data, depth='subject', base='data'):
+    if depth == 'subject':
+        # base mapper
+        mapper = lambda d: map(function, *d)
+        # map x,y instances to function
+        mapper2 = lambda i : map(mapper, i)
+        # map x,y pairs to function
+        mapper3 = lambda pair : map(mapper2, pair)
+        # map subjects to function
+        mapper4 = lambda subj : map(mapper3, subj)
+        #
+        return map(mapper4, data)
 
 
 
+#### import everything processed ...
+def standard_import(n_files=None, width=100):
+    X, Y = import_data_chunks(n_files)
+    # subj x (train valid test) x stuff
+    splits = map(train_test_split, X, Y)
+    dim(splits)
+    #dim(splits[0][0]),dim(splits[0][1]),dim(splits[0][2])
+    ### window ###
+    # base mapper
+    mapper = lambda xy: map(window, *xy)
+    # map x,y pairs to function
+    mapper2 = lambda pair : map(mapper, pair)
+    # map subjects to function
+    mapper3 = lambda subj : map(mapper2, subj)
+    #
+    splits = mapper3(splits)
+    ### end window ###
+    return splits
 
 
+
+def dim_collapse(data, level=1):
+    if level == 0:
+        return data
+    else:
+        new = []
+        for d in data:
+            new.extend(d)
+        return dim_collapse(new, level=level-1)
+
+
+
+# just to analyze dimensionality
+def dim(x):
+    try:
+        print len(x),
+        dim(x[0])
+    except:
+        print ""
+        return
 
