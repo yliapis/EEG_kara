@@ -3,10 +3,31 @@ from __future__ import division
 import numpy as np
 import os
 import mne
+
 from scipy import io
+from preprocessing import window_series
+from keras.utils import np_utils
+from multiprocessing import Pool
 
-from preprocessing import window
 
+def rec_map(function, data, depth=4, num_threads=1):
+    
+    heirarchy = ["subject",
+                 "triples",
+                 "pairs",
+                 "data"]
+    
+    def recursive_mapper(function, data, depth):
+        if depth == 1:
+            return map(function, data)
+        else:
+            mapper = lambda d: recursive_mapper(function, d, depth-1)
+            return map(mapper, data)
+    
+    if num_threads>1:
+        raise NotImplementedError()
+    else:
+        return recursive_mapper(function, data, depth)
 
 
 def get_statewave(f, size=None, state_vect=False):
@@ -33,7 +54,6 @@ def get_statewave(f, size=None, state_vect=False):
         return Y
 
 
-
 def get_epochwave(f, size=None):
     label_dict = {'clearing_inds': 1, #'thinking_inds': 2,
                 'speaking_inds':3}
@@ -56,7 +76,6 @@ def get_epochwave(f, size=None):
     return epochwave
 
 
-
 def make_labelwave(epochwave, labels):
     assert epochwave[-1] == len(labels), "inconsistent number of epochs and labels"
     # for begining of trials, with no epoch
@@ -64,7 +83,6 @@ def make_labelwave(epochwave, labels):
     #
     labelwave = labels[epochwave.astype(int)]
     return labelwave
-
 
 
 def get_labels(f, offset=0, use_dict=True, ret_dict=False):
@@ -104,6 +122,29 @@ def get_labels(f, offset=0, use_dict=True, ret_dict=False):
         return Y
 
 
+def class_filter(X, Y, filt, mode='epoch'):
+    if filt=='letter':
+        filt = np.arange(0, 7)
+    elif filt=='word':
+        filt = np.arange(7, 11)
+    elif filt is None:
+        return X, Y
+    # 
+    if mode == 'epoch':
+        X_filt, Y_filt = [], []
+        for xs, ys in zip(X,Y):
+            x0, y0 = [], []
+            for xe, ye in zip(xs,ys):
+                if ye[0] in filt:
+                    x0.append(xe)
+                    y0.append(ye)
+            X_filt.append(x0)
+            Y_filt.append(y0)
+        #
+        return X_filt, Y_filt
+    else:
+        raise NotImplementedError()
+
 
 def get_data_dirs(n_files=None):
     # define root, filepath
@@ -125,7 +166,6 @@ def get_data_dirs(n_files=None):
     lab_files = sorted(map(mapper, data_dirs))
     #
     return cnt_files, ind_files, lab_files
-
 
 
 def import_data(n_files=None, preprocessor=None):
@@ -154,8 +194,6 @@ def import_data(n_files=None, preprocessor=None):
     return X_series, Y_statewave, Y_labelwave
 
 
-
-### this function is to get time series chunks
 def import_data_chunks(n_files=None, state="thinking_inds", preprocessor=None):
     # use original file initially
     X_series, Y_statewave, Y_labelwave = import_data(n_files, preprocessor)
@@ -174,9 +212,7 @@ def import_data_chunks(n_files=None, state="thinking_inds", preprocessor=None):
     return X, Y
 
 
-
-###
-def train_test_split(X, Y):
+def train_test_split(X, Y, valid=False):
     '''
         X contains instances of epoch windows
         Y is assumed to contain equal sized windows of epoch labels
@@ -192,58 +228,51 @@ def train_test_split(X, Y):
     # assuming keep two epochs each for testing, 1 for validation : n:1:2 split
     train, valid, test = [], [], []
     mapper = lambda x, y: y*np.ones(len(x))
+    # idxs
+    train0, trainf = 0, -3
+    if valid:
+        valid0, validf = -3, -2
+        test0, testf = -2, None
+    else:
+        valid0, validf = None, None
+        test0, testf = -3, None
+    #
     for y,x in epoch_dict.items():
         data = zip(x, map(mapper, x, [y for _ in range(len(x))]))
         #splits
         #train
-        train.extend(data[:-3])
+        train.extend(data[train0:trainf])
         #valid
-        valid.extend(data[-3:-2])
+        valid.extend(data[valid0:validf])
         #test
-        test.extend(data[-2:])        
-    
+        test.extend(data[test0:testf])        
+    #
     mapper = lambda T: zip(*T)
     train, valid, test = map(mapper, (train, valid, test))
     (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = train, valid, test
-    return (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test)
-
-
-
-### helper function to apply 
-def map_function(function, data, depth='subject', base='data'):
-    if depth == 'subject':
-        # base mapper
-        mapper = lambda d: map(function, *d)
-        # map x,y instances to function
-        mapper2 = lambda i : map(mapper, i)
-        # map x,y pairs to function
-        mapper3 = lambda pair : map(mapper2, pair)
-        # map subjects to function
-        mapper4 = lambda subj : map(mapper3, subj)
-        #
-        return map(mapper4, data)
-
-
+    return (X_train, X_valid, X_test), (Y_train, Y_valid, Y_test)
 
 #### import everything processed ...
-def standard_import(n_files=None, width=100):
+def standard_import(n_files=None, width=400, nstride=50, filt=None):
     X, Y = import_data_chunks(n_files)
-    # subj x (train valid test) x stuff
-    splits = map(train_test_split, X, Y)
-    dim(splits)
-    #dim(splits[0][0]),dim(splits[0][1]),dim(splits[0][2])
+    # filter
+    X, Y = class_filter(X, Y, filt=filt)
+    # subj x (train valXid test) x stuff
+    mapper = lambda X,Y: train_test_split(X, Y, )
+    X, Y = zip(*map(train_test_split, X, Y))
     ### window ###
-    # base mapper
-    mapper = lambda xy: map(window, *xy)
-    # map x,y pairs to function
-    mapper2 = lambda pair : map(mapper, pair)
-    # map subjects to function
-    mapper3 = lambda subj : map(mapper2, subj)
-    #
-    splits = mapper3(splits)
-    ### end window ###
-    return splits
-
+    XX, YY = [], []
+    for sx, sy in zip(X, Y):
+        lx0, ly0 = [], []
+        for x,y in zip(sx,sy):
+            lx1, ly1 = [], []
+            for xe, ye in zip(x,y):
+                x_, y_ = window_series(xe, ye, width=width, nstride=nstride)
+                lx1.extend(x_), ly1.extend(y_)
+            lx0.append(lx1), ly0.append(ly1)
+        XX.append(lx0), YY.append(ly0)
+    ### end ###
+    return XX, YY
 
 
 def dim_collapse(data, level=1):
@@ -255,8 +284,6 @@ def dim_collapse(data, level=1):
             new.extend(d)
         return dim_collapse(new, level=level-1)
 
-
-
 # just to analyze dimensionality
 def dim(x):
     try:
@@ -266,3 +293,8 @@ def dim(x):
         print ""
         return
 
+
+def to_cat(y):
+    return np_utils.to_categorical(y)
+def from_cat(y):
+    return np_utils.categorical_probas_to_classes(y)
