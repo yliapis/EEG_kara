@@ -4,30 +4,11 @@ import numpy as np
 import os
 import mne
 
-from scipy import io
-from preprocessing import window_series
+from scipy import io, signal
+from preprocessing import window_series, rec_map
 from keras.utils import np_utils
 from multiprocessing import Pool
 
-
-def rec_map(function, data, depth=4, num_threads=1):
-    
-    heirarchy = ["subject",
-                 "triples",
-                 "pairs",
-                 "data"]
-    
-    def recursive_mapper(function, data, depth):
-        if depth == 1:
-            return map(function, data)
-        else:
-            mapper = lambda d: recursive_mapper(function, d, depth-1)
-            return map(mapper, data)
-    
-    if num_threads>1:
-        raise NotImplementedError()
-    else:
-        return recursive_mapper(function, data, depth)
 
 
 def get_statewave(f, size=None, state_vect=False):
@@ -36,7 +17,12 @@ def get_statewave(f, size=None, state_vect=False):
     # format indices
     for key in label_dict.keys():
         ind_dict[key] = np.array(ind_dict[key].tolist()).squeeze()
-    #
+    # split speaking inds
+    if True:
+        label_dict['hearing_inds'] = 4
+        ind_dict['hearing_inds'] = ind_dict['speaking_inds'][::2]
+        ind_dict['speaking_inds'] = ind_dict['speaking_inds'][1::2]
+    # split items
     if not size:
         size = np.max(np.concatenate([ind_dict[key].flatten() for key in label_dict.keys()]))
     Y = np.zeros(size)
@@ -146,13 +132,15 @@ def class_filter(X, Y, filt, mode='epoch'):
         raise NotImplementedError()
 
 
-def get_data_dirs(n_files=None):
+def get_data_dirs(n_files=None, simple=False):
     # define root, filepath
     home = os.environ["HOME"]
     data_root = home+"/data/karaOne/"
     # get files
     data_dirs = sorted([data_root+f+'/' for f in os.listdir(data_root)
             if f[:2] in ('MM', 'P0')])[:n_files]
+    if simple:
+        return data_dirs
     # X files
     mapper = lambda root: [root+f for f in os.listdir(root) if f[-4:] == '.cnt'][0]
     cnt_files = sorted(map(mapper, data_dirs))
@@ -168,7 +156,7 @@ def get_data_dirs(n_files=None):
     return cnt_files, ind_files, lab_files
 
 
-def import_data(n_files=None, preprocessor=None):
+def import_data(n_files=None, preprocessor=None, downsample=None):
     # get file locations
     cnt_files, ind_files, lab_files = get_data_dirs(n_files)
     # process X
@@ -191,6 +179,13 @@ def import_data(n_files=None, preprocessor=None):
     if preprocessor:
         X_series = preprocessor(X_series)
     #
+    if downsample is not None:
+        assert downsample%1 == 0, "downsample should be an int"
+        mapper = lambda y: y[downsample-1::downsample]
+        Y_statewave = map(mapper, Y_statewave)
+        Y_labelwave = map(mapper, Y_labelwave)
+        mapper = lambda x: signal.decimate(x, downsample, axis=0, zero_phase=True)
+        X_series = map(mapper, X_series)
     return X_series, Y_statewave, Y_labelwave
 
 
@@ -226,8 +221,6 @@ def train_test_split(X, Y, valid=False):
         else:
             epoch_dict[label].append(x)
     # assuming keep two epochs each for testing, 1 for validation : n:1:2 split
-    train, valid, test = [], [], []
-    mapper = lambda x, y: y*np.ones(len(x))
     # idxs
     train0, trainf = 0, -3
     if valid:
@@ -237,6 +230,8 @@ def train_test_split(X, Y, valid=False):
         valid0, validf = None, None
         test0, testf = -3, None
     #
+    train, valid, test = [], [], []
+    mapper = lambda x, y: y*np.ones(len(x))
     for y,x in epoch_dict.items():
         data = zip(x, map(mapper, x, [y for _ in range(len(x))]))
         #splits
