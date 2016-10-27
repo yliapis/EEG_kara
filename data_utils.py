@@ -5,21 +5,21 @@ import os
 import mne
 
 from scipy import io, signal
-from preprocessing import window_series, rec_map
+from preprocessing import window_series, rec_map, bp_filter
 from keras.utils import np_utils
 from multiprocessing import Pool
 
 
 
 def get_statewave(f, size=None, state_vect=False):
-    label_dict = {'clearing_inds': 1, 'thinking_inds': 2, 'speaking_inds': 3}
+    label_dict = {'clearing_inds': 1, 'thinking_inds': 3, 'speaking_inds': 4}
     ind_dict = io.loadmat(f)
     # format indices
     for key in label_dict.keys():
         ind_dict[key] = np.array(ind_dict[key].tolist()).squeeze()
     # split speaking inds
     if True:
-        label_dict['hearing_inds'] = 4
+        label_dict['hearing_inds'] = 2
         ind_dict['hearing_inds'] = ind_dict['speaking_inds'][::2]
         ind_dict['speaking_inds'] = ind_dict['speaking_inds'][1::2]
     # split items
@@ -63,7 +63,10 @@ def get_epochwave(f, size=None):
 
 
 def make_labelwave(epochwave, labels):
-    assert epochwave[-1] == len(labels), "inconsistent number of epochs and labels"
+    num_ewave = int(epochwave[-1]-epochwave[0]+1)
+    if int(num_ewave) == len(labels):
+        print "inconsistent number of epochs and labels:\
+                        \n\t expected:{} have:{}".format(num_ewave, len(labels))
     # for begining of trials, with no epoch
     labels = np.concatenate(([-1], labels))
     #
@@ -156,18 +159,51 @@ def get_data_dirs(n_files=None, simple=False):
     return cnt_files, ind_files, lab_files
 
 
-def import_data(n_files=None, preprocessor=None, downsample=None):
+def narrow(y, label, offset=0, duration=2, fs=200):
+    assert type(y) == type(np.arange(9))
+    yl = (y==label).astype(int)
+    dy = np.diff(yl)
+    starts, ends = np.where(dy>0)[0], np.where(dy<0)[0]
+    starts = starts + int(offset*fs)
+    ends = np.copy(starts) + int(duration*fs)
+    y_new = np.zeros(y.shape)
+    for s,e in zip(starts, ends):
+        y_new[s:e] = label
+    return y - yl*label + y_new
+    
+
+def import_data(n_files=None, preprocessor=None, downsample=None, ch_dict=False, 
+    ICA=False, bp_range=(.5, 70), channel_range="valid", filt=None):
+    # we know fs
+    fs = 1000
+    fs /= downsample
     # get file locations
     cnt_files, ind_files, lab_files = get_data_dirs(n_files)
     # process X
-    channel_range = np.arange(0,64)
     channel_dict = {name:i for i,name in enumerate(
-            mne.io.read_raw_cnt(cnt_files[0], None, date_format="dd/mm/yy").ch_names[:len(channel_range)])}
-    def m0(f):
-        obj = mne.io.read_raw_cnt(f, None, date_format="dd/mm/yy")
-        df = obj.to_data_frame()
-        return df.values[:,channel_range]
+            mne.io.read_raw_cnt(cnt_files[0], None, date_format="dd/mm/yy").ch_names)}
+    def m0(f, channel_range=channel_range):
+        raw = mne.io.read_raw_cnt(f, None, date_format="dd/mm/yy")
+
+        if not ICA:
+            dfx = raw.to_data_frame()
+            dfx = dfx.values
+            if channel_range == "valid":
+                channel_range = range(0,64)
+                channel_range.remove(42) #M2
+                channel_range.remove(32) #M1
+                dfx = dfx[:,channel_range]               
+        else:
+            # perform ICA
+            raise NotImplementedError()
+        return dfx
+    # define bandpass filter
+    
+    #
     X_series = map(m0, cnt_files)
+    if filt=='CAR': # commont average refference
+        mapper = lambda x: x - x.mean(1)[:,None]
+        X_series = map(mapper, X_series)
     # get statewave
     mapper = lambda f,x : get_statewave(f, x.shape[0])
     Y_statewave = map(mapper, ind_files, X_series)
@@ -186,12 +222,20 @@ def import_data(n_files=None, preprocessor=None, downsample=None):
         Y_labelwave = map(mapper, Y_labelwave)
         mapper = lambda x: signal.decimate(x, downsample, axis=0, zero_phase=True)
         X_series = map(mapper, X_series)
-    return X_series, Y_statewave, Y_labelwave
+    #
+    if bp_range is not None:
+        low, high = bp_range
+        mapper = lambda series : bp_filter(series, low, high, fs=fs)
+        X_series = map(mapper, X_series)
+    if ch_dict:
+        return X_series, Y_statewave, Y_labelwave, channel_dict
+    else:
+        return X_series, Y_statewave, Y_labelwave
 
 
-def import_data_chunks(n_files=None, state="thinking_inds", preprocessor=None):
+def import_data_chunks(n_files=None, state="thinking_inds", preprocessor=None, downsample=None):
     # use original file initially
-    X_series, Y_statewave, Y_labelwave = import_data(n_files, preprocessor)
+    X_series, Y_statewave, Y_labelwave = import_data(n_files, preprocessor, downsample=downsample)
     ind_files = get_data_dirs(n_files)[1]
     if state == "speaking_inds":
         raise NotImplementedError("not implemented for speaking_inds...")
@@ -200,6 +244,8 @@ def import_data_chunks(n_files=None, state="thinking_inds", preprocessor=None):
         ind_dict = io.loadmat(f)
         return np.array(ind_dict[state].tolist()).squeeze()
     idxs = map(get_idxs, ind_files)
+    if downsample is not None:
+        idxs = map(lambda x: (x/downsample).astype(int), idxs)
     def segment(series, idxs):
         return [series[idx0-1:idxf+1] for idx0,idxf in idxs]
     X = map(segment, X_series, idxs)
@@ -214,6 +260,7 @@ def train_test_split(X, Y, valid=False):
     '''
     # first organize data
     epoch_dict = {}
+    dim(X), dim(Y)
     for x,y in zip(X,Y):
         label = y[0]
         if label not in epoch_dict:
@@ -248,12 +295,15 @@ def train_test_split(X, Y, valid=False):
     return (X_train, X_valid, X_test), (Y_train, Y_valid, Y_test)
 
 #### import everything processed ...
-def standard_import(n_files=None, width=400, nstride=50, filt=None):
-    X, Y = import_data_chunks(n_files)
+def standard_import(n_files=None, width=400, stride=50, filt=None, downsample=None):
+    fs = 1000
+    if downsample is not None:
+        fs = fs / downsample
+    X, Y = import_data_chunks(n_files, downsample=downsample)
     # filter
     X, Y = class_filter(X, Y, filt=filt)
     # subj x (train valXid test) x stuff
-    mapper = lambda X,Y: train_test_split(X, Y, )
+    mapper = lambda X,Y: train_test_split(X, Y)
     X, Y = zip(*map(train_test_split, X, Y))
     ### window ###
     XX, YY = [], []
@@ -262,7 +312,7 @@ def standard_import(n_files=None, width=400, nstride=50, filt=None):
         for x,y in zip(sx,sy):
             lx1, ly1 = [], []
             for xe, ye in zip(x,y):
-                x_, y_ = window_series(xe, ye, width=width, nstride=nstride)
+                x_, y_ = window_series(xe, ye, width=width, fs=fs, stride=stride)
                 lx1.extend(x_), ly1.extend(y_)
             lx0.append(lx1), ly0.append(ly1)
         XX.append(lx0), YY.append(ly0)
@@ -293,3 +343,44 @@ def to_cat(y):
     return np_utils.to_categorical(y)
 def from_cat(y):
     return np_utils.categorical_probas_to_classes(y)
+
+
+def balance(X, Y, mode='binary'):
+    if mode == 'binary':
+        #to np array
+        Y = np.array(Y).astype(int)
+        #find values
+        Y_true, Y_null = (Y==0), (Y!=0)
+        size = min(sum(Y_true), sum(Y_null))
+        # find idxs and shuffle
+        def mapper(Y_bool):
+            Y_i = np.where(Y_bool)[0]
+            sz = Y_i.shape[0]
+            shuffler = lambda z: np.random.permutation(z)
+            return Y_i[shuffler(sz)][shuffler(size)]
+        Y_true_i, Y_null_i = map(mapper, [Y_true, Y_null])
+        X = [X[i] for i in Y_true_i] + [X[i] for i in Y_null_i]
+        Y = [Y[i] for i in Y_true_i] + [Y[i] for i in Y_null_i]
+        shuffler = np.random.permutation(len(X))
+        shuffle = lambda ls: [ls[i] for i in shuffler]
+        return shuffle(X), shuffle(Y)
+    else:
+        raise NotImplementedError()
+
+
+def split(x, split=.33):
+    point = int(len(x)*(1-split))
+    return np.copy(x[:point]), np.copy(x[point:])
+
+
+def narrow(y, label, offset=0, duration=2, fs=200):
+    assert type(y) == type(np.arange(9))
+    yl = (y==label).astype(int)
+    dy = np.diff(yl)
+    starts, ends = np.where(dy>0)[0], np.where(dy<0)[0]
+    starts = starts + int(offset*fs)
+    ends = np.copy(starts) + int(duration*fs)
+    y_new = np.zeros(y.shape)
+    for s,e in zip(starts, ends):
+        y_new[s:e] = label
+    return y - yl*label + y_new

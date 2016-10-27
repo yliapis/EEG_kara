@@ -1,5 +1,6 @@
 from preprocessing import *
-
+from scipy import fftpack
+import numpy as np
 
 class MACE_filter:
     
@@ -12,6 +13,7 @@ class MACE_filter:
         #
         # Lexicographic reordering and vetorizing input
         # just
+        self.shape = X_win[0].shape
         Xf = map(lambda x: x.reshape(-1), map(dft2, X_win))
         X = np.array(Xf).T
         mu_psd = sum(map(lambda x: (np.abs(x)**2), Xf))/len(Xf)
@@ -28,13 +30,20 @@ class MACE_filter:
         #
         self.H = H
         #
+        self.h = fftpack.ifft2(H.reshape(self.shape))
+        #
         return self
 
-    def predict(self, X_win, method="frequency"):
-    	if method == "frequency":
-    		H = self.H.squeeze()
-    		mapper = lambda win: np.abs(fftpack.fft2(win).reshape(-1).dot(H))
-			return map(mapper, X_win)
-    	else:
-    		raise NotImplementedError()
+    def predict_score(self, X_win, method="frequency"):
+        if method == "frequency":
+            H = self.H.squeeze()
+            mapper = lambda win: np.abs(fftpack.fft2(win).reshape(-1).dot(H))
+            return map(mapper, X_win)
+        elif method == "time":
+            mapper = lambda win: np.sum(win*self.h)
+            return map(mapper, X_win)
+        else:
+            raise NotImplementedError()
+
+
         
