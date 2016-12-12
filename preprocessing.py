@@ -28,20 +28,14 @@ def bp_filter(data, low, high, fs=1, order=5):
         return y
 
 
-def rec_map(function, data, depth=4, num_threads=1):
-    
-    hierarchy = ["subject",
-                 "triples",
-                 "pairs",
-                 "data"]
-    
+def rec_map(function, data, depth=2, num_threads=1):
+
     def recursive_mapper(function, data, depth):
         if depth == 1:
             return map(function, data)
         else:
             mapper = lambda d: recursive_mapper(function, d, depth-1)
             return map(mapper, data)
-    
     if num_threads != 1:
         raise NotImplementedError()
     else:
@@ -100,6 +94,33 @@ def normalize(X, axis=0):
 #       win = demean(win, mode=demean_mode)
 #   dft = cv2.dft(win, flags=cv2.DFT_ROWS)[:,start:end]
 #   return dft
+
+
+def psd(win, ftype='DPSS'):
+    if ftype is 'welch':
+        f,P = signal.welch(win, fs=200, nperseg=100)
+    elif ftype is 'periodogram':
+        f,P = signal.periodogram(win, fs=200)
+    else:
+        P = []
+        low, high = 0, 40
+        for x in win:
+            psd, f = mtspec.mtspec(x, 1/200, 2)
+            F.append(f)
+            P.append(psd)
+        idxs = (low<=f)*(f<=high)
+        return np.array(P)[:,idxs]
+        
+    low, high = 0, 40
+    idxs = (low<=f)*(f<=high)
+    return P[:,idxs]
+
+
+def normalizer(feats):
+    mu, std = np.mean(feats, 0), np.std(feats, 0)
+    mapper = lambda f: (f-mu)/std
+    return map(mapper, feats)   
+
 
 def dft(x):
     return fftpack.fft(x)
@@ -160,13 +181,13 @@ def get_features(data_dir, ftype):
     return io.loadmat(data_dir+f)
 
 
-def feature_vect(wins, ftype=1, fs=200, trim=True, norm=True,
-    means=None, stds=None):
+def feature_vect(wins, ftype=1, fs=200, frange=(0,40),
+    trim=False, norm=False, flatten=True):
     if ftype == 1: # psd
         window_size = wins[0].shape[-1]
         hann = signal.hann(window_size).reshape(1,-1)
         psd_mapper = lambda win: window_psd(win*hann, 
-                                fs=fs, frange=(0,20))
+                                fs=fs, frange=frange)
         feats = map(psd_mapper, wins)
     elif ftype == 2:
         feats = wins
@@ -214,30 +235,41 @@ def feature_vect(wins, ftype=1, fs=200, trim=True, norm=True,
     elif ftype == 8: #minmax
         mapper = lambda win: win.max(-1)-win.min(-1)
         feats = map(mapper, wins)
-    ####
-    # flatten
-    mapper = lambda v: v.reshape(-1)
-    feats = map(mapper, feats)
-    #
-    if means is None:
-        means = np.mean(feats, axis=0).reshape(-1)
-    if stds is None:
-        stds = np.std(feats, axis=0).reshape(-1)
-    if trim:
-        keeps = (stds != 0.0)
-        #print type(feats[0]), np.shape(feats[0]), keeps.shape, keeps.dtype
-        mapper = lambda f: f[keeps]
+    elif ftype == 9: # psd normed
+        window_size = wins[0].shape[-1]
+        hann = signal.hann(window_size).reshape(1,-1)
+        psd_mapper = lambda win: window_psd(win*hann, 
+                                fs=fs, frange=frange)
+        feats = map(psd_mapper, wins)
+        # norm psd
+        mapper = lambda P: P/np.sum(P, 1)[:,None]
         feats = map(mapper, feats)
-        print "trimming ratio:", 1-sum(keeps)/len(keeps)
-        print np.shape(feats),
-    else:
-        keeps = np.ones(means.shape).astype(bool)
+    elif ftype == 10: # welch psd
+        # z norm
+        #znorm = lambda w: (w-np.mean(w,1)[:,None]) / np.std(w,1)[:,None]
+        #wins = map(znorm, wins)
+        def psd(win):
+            f, P = signal.welch(win, fs=fs, nperseg=100, noverlap=50)
+            return P[:,(f>=frange[0])*(f<=frange[1])]
+        feats = map(psd, wins)        
+    elif ftype == 11:  # time series...?
+        pass
+    elif ftype == 12:  # log psd
+        return feature_vect(wins, ftype=10)
+    elif ftype == 13:  # log psd
+        v = feature_vect(wins, ftype=10)
+        return np.concatenate([v, np.log(v)], axis=-1)
+    # flatten
+    if flatten:
+        mapper = lambda v: v.reshape(-1)
+        feats = map(mapper, feats)
     # norm
-    if norm: 
-        #print map(np.ndim, [feats, means, stds])
-        feats = map(lambda w: ((w-means[keeps])/stds[keeps]), feats)
-        print np.shape(feats)
-    return feats, means, stds
+    if norm:
+        mean = np.mean(feats, 0)
+        std = np.std(feats, 0)
+        mapper = lambda f: (f-mean)/std
+        feats = map(mapper, feats)
+    return feats
 
 #### pipelines
 def pipeline_standard(X_raw, depth=3, features='psd'):
@@ -251,3 +283,15 @@ def pipeline_standard(X_raw, depth=3, features='psd'):
     X = rec_map(flatten, X, depth)
     #
     return X
+
+
+from itertools import chain,combinations
+def powerset_gen(iterable):
+    "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
+    s = list(iterable)
+    return chain.from_iterable(combinations(s, r) for r in range(len(s)+1))
+    
+
+
+
+

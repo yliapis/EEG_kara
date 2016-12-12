@@ -173,7 +173,7 @@ def narrow(y, label, offset=0, duration=2, fs=200):
     
 
 def import_data(n_files=None, preprocessor=None, downsample=None, ch_dict=False, 
-    ICA=False, bp_range=(.5, 70), channel_range="valid", filt=None):
+    ICA=False, bp_range=(.5, 40), channel_range="valid", filt=None):
     # we know fs
     fs = 1000
     fs /= downsample
@@ -201,7 +201,7 @@ def import_data(n_files=None, preprocessor=None, downsample=None, ch_dict=False,
     
     #
     X_series = map(m0, cnt_files)
-    if filt=='CAR': # commont average refference
+    if filt=='CAR': # commont average reference
         mapper = lambda x: x - x.mean(1)[:,None]
         X_series = map(mapper, X_series)
     # get statewave
@@ -233,9 +233,9 @@ def import_data(n_files=None, preprocessor=None, downsample=None, ch_dict=False,
         return X_series, Y_statewave, Y_labelwave
 
 
-def import_data_chunks(n_files=None, state="thinking_inds", preprocessor=None, downsample=None):
+def import_data_chunks(n_files=None, state="thinking_inds", preprocessor=None, downsample=None, bp_range=(1,40)):
     # use original file initially
-    X_series, Y_statewave, Y_labelwave = import_data(n_files, preprocessor, downsample=downsample)
+    X_series, Y_statewave, Y_labelwave = import_data(n_files, preprocessor, downsample=downsample, bp_range=bp_range)
     ind_files = get_data_dirs(n_files)[1]
     if state == "speaking_inds":
         raise NotImplementedError("not implemented for speaking_inds...")
@@ -293,6 +293,37 @@ def train_test_split(X, Y, valid=False):
     train, valid, test = map(mapper, (train, valid, test))
     (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test) = train, valid, test
     return (X_train, X_valid, X_test), (Y_train, Y_valid, Y_test)
+
+
+def state_window(X, Y, rest=1, label=3, fs=200, window_size=2000, window_stride=200, num_wins=1):
+    # locate labels
+    Y_1 = (Y == label).astype(int)
+    Y_0 = (Y == rest).astype(int)
+    diff0, diff1 = np.diff(Y_0), np.diff(Y_1)
+    # compute window limits
+    start0, end0 = map(lambda x: np.where(x)[0], [diff0>0, diff0<0])
+    start1, end1 = map(lambda x: np.where(x)[0], [diff1>0, diff1<0])
+
+    mapper = lambda lims: X[lims[0]:lims[1]]
+    X0, X1 = rec_map(mapper, [zip(start0, end0), zip(start1, end1)], 2)
+    # window series
+    mapper = lambda win: window_series(win, width=window_size, 
+                                       stride=window_stride, fs=fs, num_wins=num_wins)
+    X0, X1 = rec_map(mapper, [X0, X1], 2)
+    # flatten windows
+    mapper = lambda x: [i for j in x for i in j]
+    X0, X1 = map(mapper, [X0, X1])
+    # split data
+    X0_train, X0_test = split(X0)
+    X1_train, X1_test = split(X1)
+    X_train, X_test = map(np.concatenate, [[X0_train, X1_train], [X0_test, X1_test]])
+    # create label vectors
+    Y0_train, Y0_test = np.zeros(len(X0_train)), np.zeros(len(X0_test))
+    Y1_train, Y1_test = np.ones(len(X1_train)), np.ones(len(X1_test))
+    Y_train, Y_test = map(np.concatenate, [[Y0_train, Y1_train], [Y0_test, Y1_test]])
+    #
+    return (X_train, Y_train), (X_test, Y_test)
+
 
 #### import everything processed ...
 def standard_import(n_files=None, width=400, stride=50, filt=None, downsample=None):
